@@ -131,6 +131,14 @@ def fetch_daily_papers(**context):
         if results.get("papers_fetched", 0) == 0:
             logger.warning(f"No papers found for date {target_date}")
 
+        # Fail loudly if papers were fetched but none stored — a silent 0-stored run
+        # (e.g. a DB constraint error) must not be reported as task success.
+        if results.get("papers_fetched", 0) > 0 and results.get("papers_stored", 0) == 0:
+            raise Exception(
+                f"Fetched {results['papers_fetched']} papers but stored 0 to the database "
+                f"— failing the task to surface the storage failure. Errors: {results.get('errors')}"
+            )
+
         # Store results for downstream tasks
         context["task_instance"].xcom_push(key="fetch_results", value=results)
 
