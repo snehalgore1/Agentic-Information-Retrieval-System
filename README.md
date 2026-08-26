@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/OpenSearch-2.19-005EB8.svg" alt="OpenSearch">
   <img src="https://img.shields.io/badge/Airflow-orchestration-017CEE.svg" alt="Airflow">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED.svg" alt="Docker">
-  <img src="https://img.shields.io/badge/Progress-Weeks%201--3%20complete%20·%20BM25%20search%20live-brightgreen.svg" alt="Status">
+  <img src="https://img.shields.io/badge/Progress-Weeks%201--4%20complete%20·%20hybrid%20search%20live-brightgreen.svg" alt="Status">
 </p>
 
 > Personal engineering project by **[Snehal Gore](https://github.com/snehalgore1)** — MS Computer Science.
@@ -87,11 +87,12 @@ flowchart LR
   - **`libGL.so.1` missing in a slim image** — Docling's vision models `dlopen` native libs that slim Docker images omit; fixed the Dockerfile.
   - **NUL bytes + transaction cascade** — a single `\x00` from PDF extraction (rejected by Postgres) aborted the transaction and, because the handler never rolled back, dropped the *entire* batch while reporting success. Fixed the data hygiene **and** the resilience gap, and made the task fail loudly on 0-stored.
 
-**Phase 3 — BM25 keyword search (complete ✅)**
+**Phase 3 — Search foundations: BM25 + vector + hybrid (complete ✅)**
 
-- **Indexed papers into OpenSearch** with a custom analyzer (tokenize → lowercase → stopwords → snowball stemming) and multi-field `text`/`keyword` mappings; **full parsed body text is searchable**, not just abstracts.
-- **BM25 relevance search** via a `/search` REST endpoint with **field boosting** (`title^3, abstract^2`) — verified the ranking is explainable (on-topic queries produce a clear winner; off-topic queries score low and flat).
-- **21/21 papers indexed**, index kept in parity with Postgres.
+- **BM25 keyword search:** indexed papers into OpenSearch with a custom analyzer (tokenize → lowercase → stopwords → snowball stemming) and multi-field `text`/`keyword` mappings; **full parsed body text searchable**, with field boosting (`title^3, abstract^2`) via a REST endpoint. Verified explainable ranking (on-topic → clear winner; off-topic → low, flat scores).
+- **Vector / semantic search:** chunked papers into ~600-word overlapping segments (**350 chunks / 14 papers**), embedded each with **Jina v3** (1024-dim), and indexed into a `knn_vector` field using **HNSW** approximate-nearest-neighbor.
+- **Hybrid search (RRF):** fused BM25 + vector rankings with **Reciprocal Rank Fusion** (`1/(k+rank)`, k=60) via an OpenSearch search pipeline — no score-normalization or manual weights. Exposed a `/hybrid-search` endpoint supporting BM25 / vector / hybrid modes.
+- **Real integration lessons:** handled **Jina free-tier rate limits** (429s) with throttled retry; recognized that metadata-only papers (no body text) correctly yield zero chunks.
 
 > Phases 4–6 below are the roadmap ahead, not yet built — tracked honestly so the status is never oversold.
 
@@ -103,7 +104,7 @@ flowchart LR
 |------:|-------|------------------|--------|
 | **1** | Infrastructure & environment | Docker Compose, FastAPI, PostgreSQL, OpenSearch, Airflow, Ollama | ✅ **Done** |
 | **2** | Automated data ingestion | Airflow DAGs, arXiv API, PDF parsing (Docling) | ✅ **Done** |
-| **3** | Search foundations | **BM25 keyword ✅** → vector/semantic → **hybrid (RRF)**, chunking, Jina embeddings | 🔄 In progress (BM25 live; vector + hybrid next) |
+| **3** | Search foundations | BM25 ✅ · vector/semantic ✅ · **hybrid RRF ✅** · chunking · Jina embeddings | ✅ **Done** |
 | **4** | Full RAG with LLM | Ollama (native Metal), prompt design, SSE streaming, UI | 🔜 Planned |
 | **5** | Observability & caching | Langfuse tracing, Redis caching, cost/latency analysis | 🔜 Planned |
 | **6** | Agentic RAG + delivery | LangGraph (guardrails, doc grading, query rewriting, adaptive retrieval), Telegram bot | 🔜 Planned |
@@ -137,6 +138,8 @@ flowchart LR
 - **Fail-loud observability** — an ingestion run that fetches papers but stores zero now raises instead of reporting a false "success."
 - **Native-lib debugging in containers** — diagnosed a runtime `dlopen` failure (`libGL.so.1`) in a slim base image and fixed it at the Dockerfile layer.
 - **Search relevance engineering** — BM25 scoring (TF · IDF · length-norm) with per-field boosting and custom analyzers; `must` (scored) vs `filter` (cached gate) query composition.
+- **Semantic + hybrid retrieval** — text chunking, Jina embeddings, HNSW approximate-nearest-neighbor vector search, and **RRF fusion** to combine keyword + vector rankings without score normalization; understand *why* rank-based fusion beats weighted-sum when score scales differ.
+- **Third-party API integration** — API-key config via env, request batching, and **rate-limit (429) handling** with throttled retry.
 
 ---
 
