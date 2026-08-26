@@ -15,6 +15,11 @@ RUN apt-get update && \
         libpq-dev \
         poppler-utils \
         tesseract-ocr \
+        # libgl1 + libglib2.0-0: native OpenGL/GLib libs that Docling's vision
+        # models (via OpenCV) dlopen at runtime; the slim base image omits them,
+        # causing "libGL.so.1: cannot open shared object file" during PDF parsing.
+        libgl1 \
+        libglib2.0-0 \
         && rm -rf /var/lib/apt/lists/*
 
 # Create airflow user with UID/GID 50000 for cross-platform compatibility
