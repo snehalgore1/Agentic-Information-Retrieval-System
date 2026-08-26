@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import List
 
@@ -29,6 +30,32 @@ class JinaEmbeddingsClient:
         self.client = httpx.AsyncClient(timeout=30.0)
         logger.info("Jina embeddings client initialized")
 
+    async def _post_embeddings(self, request_data: "JinaEmbeddingRequest", max_retries: int = 5) -> JinaEmbeddingResponse:
+        """POST to the embeddings API with exponential backoff on rate limits.
+
+        Jina's free tier throttles bursts with HTTP 429/403; retry with backoff so
+        indexing and search survive throttling instead of failing.
+        """
+        delay = 2.0
+        for attempt in range(max_retries):
+            try:
+                response = await self.client.post(
+                    f"{self.base_url}/embeddings", headers=self.headers, json=request_data.model_dump()
+                )
+                response.raise_for_status()
+                return JinaEmbeddingResponse(**response.json())
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 403) and attempt < max_retries - 1:
+                    logger.warning(
+                        f"Jina throttled ({e.response.status_code}); retrying in {delay:.0f}s "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                raise
+        raise RuntimeError("Unreachable: embeddings retry loop exhausted")
+
     async def embed_passages(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
         """Embed text passages for indexing.
 
@@ -45,24 +72,10 @@ class JinaEmbeddingsClient:
                 model="jina-embeddings-v3", task="retrieval.passage", dimensions=1024, input=batch
             )
 
-            try:
-                response = await self.client.post(
-                    f"{self.base_url}/embeddings", headers=self.headers, json=request_data.model_dump()
-                )
-                response.raise_for_status()
-
-                result = JinaEmbeddingResponse(**response.json())
-                batch_embeddings = [item["embedding"] for item in result.data]
-                embeddings.extend(batch_embeddings)
-
-                logger.debug(f"Embedded batch of {len(batch)} passages")
-
-            except httpx.HTTPError as e:
-                logger.error(f"Error embedding passages: {e}")
-                raise
-            except Exception as e:
-                logger.error(f"Unexpected error in embed_passages: {e}")
-                raise
+            result = await self._post_embeddings(request_data)
+            batch_embeddings = [item["embedding"] for item in result.data]
+            embeddings.extend(batch_embeddings)
+            logger.debug(f"Embedded batch of {len(batch)} passages")
 
         logger.info(f"Successfully embedded {len(texts)} passages")
         return embeddings
@@ -75,22 +88,10 @@ class JinaEmbeddingsClient:
         """
         request_data = JinaEmbeddingRequest(model="jina-embeddings-v3", task="retrieval.query", dimensions=1024, input=[query])
 
-        try:
-            response = await self.client.post(f"{self.base_url}/embeddings", headers=self.headers, json=request_data.model_dump())
-            response.raise_for_status()
-
-            result = JinaEmbeddingResponse(**response.json())
-            embedding = result.data[0]["embedding"]
-
-            logger.debug(f"Embedded query: '{query[:50]}...'")
-            return embedding
-
-        except httpx.HTTPError as e:
-            logger.error(f"Error embedding query: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error in embed_query: {e}")
-            raise
+        result = await self._post_embeddings(request_data)
+        embedding = result.data[0]["embedding"]
+        logger.debug(f"Embedded query: '{query[:50]}...'")
+        return embedding
 
     async def close(self):
         """Close the HTTP client."""
