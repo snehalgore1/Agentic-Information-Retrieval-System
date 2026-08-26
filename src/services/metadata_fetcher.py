@@ -16,6 +16,23 @@ from src.services.pdf_parser.parser import PDFParserService
 logger = logging.getLogger(__name__)
 
 
+def _strip_null_bytes(value: Any) -> Any:
+    """Recursively remove NUL (0x00) characters from strings.
+
+    Docling's PDF text extraction can emit embedded NUL bytes, but PostgreSQL text
+    columns reject them ("A string literal cannot contain NUL (0x00) characters").
+    A single unsanitized value aborts the whole insert transaction, so we clean the
+    data before it reaches the database.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {key: _strip_null_bytes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_strip_null_bytes(item) for item in value]
+    return value
+
+
 class MetadataFetcher:
     """
     Service for fetching arXiv papers with PDF processing and database storage.
@@ -363,6 +380,10 @@ class MetadataFetcher:
                     )
                     logger.debug(f"Storing paper {paper.arxiv_id} with metadata only")
 
+                # Strip NUL bytes (0x00) that PDF extraction can emit; PostgreSQL text
+                # columns reject them and a single one aborts the whole transaction.
+                paper_data = _strip_null_bytes(paper_data)
+
                 paper_create = PaperCreate(**paper_data)
                 stored_paper = paper_repo.upsert(paper_create)
 
@@ -372,6 +393,9 @@ class MetadataFetcher:
                     logger.debug(f"Stored paper {paper.arxiv_id} to database ({content_info})")
 
             except Exception as e:
+                # Recover the session so one failed record can't poison the transaction
+                # and cascade-fail every subsequent paper in the batch.
+                db_session.rollback()
                 logger.error(f"Failed to store paper {paper.arxiv_id}: {e}")
 
         # Commit all changes
