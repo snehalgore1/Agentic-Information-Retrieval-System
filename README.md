@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/OpenSearch-2.19-005EB8.svg" alt="OpenSearch">
   <img src="https://img.shields.io/badge/Airflow-orchestration-017CEE.svg" alt="Airflow">
   <img src="https://img.shields.io/badge/Docker-Compose-2496ED.svg" alt="Docker">
-  <img src="https://img.shields.io/badge/Phase%201-Infrastructure%20✅-brightgreen.svg" alt="Status">
+  <img src="https://img.shields.io/badge/Progress-Weeks%201--3%20complete%20·%20BM25%20search%20live-brightgreen.svg" alt="Status">
 </p>
 
 > Personal engineering project by **[Snehal Gore](https://github.com/snehalgore1)** — MS Computer Science.
@@ -49,12 +49,12 @@ flowchart LR
     user -->|pipeline UI| af
 
     api --> pg
-    api --> os
-    api -.->|LLM answers, Phase 3+| ol
+    api -->|BM25 search| os
+    api -.->|LLM answers, Phase 4| ol
 
     af --> pg
-    af -.->|index papers, Phase 1| os
-    af -.->|fetch + parse arXiv, Phase 1| arxiv
+    af -->|index papers| os
+    af -->|fetch + parse arXiv| arxiv
     osd --> os
 ```
 
@@ -79,7 +79,21 @@ flowchart LR
 - **Reproducible, thin images:** understood and can explain the **multi-stage Docker build** (build fat with the `uv` toolchain, ship a slim runtime) and **health-check-gated dependency startup** (`depends_on: condition: service_healthy`) so the API never boots ahead of its datastores.
 - **Set up a clean, portfolio-oriented Git workflow** (see [Engineering practices](#engineering-practices-i-can-speak-to)) so `main` tells my own week-by-week story while honestly preserving the course baseline as a reference branch.
 
-> Phases 2–6 below are the roadmap ahead, not yet built — tracked honestly so the status is never oversold.
+**Phase 2 — Automated data ingestion (complete ✅)**
+
+- **Built and ran the arXiv ingestion pipeline** (Airflow DAG): fetch metadata → download PDFs → **parse with Docling** → store in Postgres. Verified a *green DAG run that actually stores* — currently **21 papers** with full extracted text.
+- **Debugged three real production failures** (the kind that separate "did a tutorial" from "can ship"):
+  - **`create_all` doesn't migrate** — a stale Week 1 table was missing new columns; production needs Alembic.
+  - **`libGL.so.1` missing in a slim image** — Docling's vision models `dlopen` native libs that slim Docker images omit; fixed the Dockerfile.
+  - **NUL bytes + transaction cascade** — a single `\x00` from PDF extraction (rejected by Postgres) aborted the transaction and, because the handler never rolled back, dropped the *entire* batch while reporting success. Fixed the data hygiene **and** the resilience gap, and made the task fail loudly on 0-stored.
+
+**Phase 3 — BM25 keyword search (complete ✅)**
+
+- **Indexed papers into OpenSearch** with a custom analyzer (tokenize → lowercase → stopwords → snowball stemming) and multi-field `text`/`keyword` mappings; **full parsed body text is searchable**, not just abstracts.
+- **BM25 relevance search** via a `/search` REST endpoint with **field boosting** (`title^3, abstract^2`) — verified the ranking is explainable (on-topic queries produce a clear winner; off-topic queries score low and flat).
+- **21/21 papers indexed**, index kept in parity with Postgres.
+
+> Phases 4–6 below are the roadmap ahead, not yet built — tracked honestly so the status is never oversold.
 
 ---
 
@@ -88,8 +102,8 @@ flowchart LR
 | Phase | Focus | Key technologies | Status |
 |------:|-------|------------------|--------|
 | **1** | Infrastructure & environment | Docker Compose, FastAPI, PostgreSQL, OpenSearch, Airflow, Ollama | ✅ **Done** |
-| **2** | Automated data ingestion | Airflow DAGs, arXiv API, PDF parsing (Docling) | ⏳ Next |
-| **3** | Search foundations | BM25 keyword → vector/semantic → **hybrid (RRF)**, chunking, Jina embeddings | 🔜 Planned |
+| **2** | Automated data ingestion | Airflow DAGs, arXiv API, PDF parsing (Docling) | ✅ **Done** |
+| **3** | Search foundations | **BM25 keyword ✅** → vector/semantic → **hybrid (RRF)**, chunking, Jina embeddings | 🔄 In progress (BM25 live; vector + hybrid next) |
 | **4** | Full RAG with LLM | Ollama (native Metal), prompt design, SSE streaming, UI | 🔜 Planned |
 | **5** | Observability & caching | Langfuse tracing, Redis caching, cost/latency analysis | 🔜 Planned |
 | **6** | Agentic RAG + delivery | LangGraph (guardrails, doc grading, query rewriting, adaptive retrieval), Telegram bot | 🔜 Planned |
@@ -119,6 +133,10 @@ flowchart LR
 - **12-factor configuration** — all config via environment variables; container-vs-host hostnames handled through per-service overrides.
 - **Persistent named volumes** — datastore state survives `docker compose down`.
 - **Portfolio-grade Git hygiene** — `main` is my own progressive build; the upstream course's finished solution is preserved on a clearly-labeled `course-complete` reference branch, never presented as my own.
+- **Resilient data pipelines** — sanitize model-extracted text before storage (NUL bytes), roll back per-record so one bad row can't poison a batch, and degrade gracefully (store metadata when PDF parsing fails) instead of dropping papers.
+- **Fail-loud observability** — an ingestion run that fetches papers but stores zero now raises instead of reporting a false "success."
+- **Native-lib debugging in containers** — diagnosed a runtime `dlopen` failure (`libGL.so.1`) in a slim base image and fixed it at the Dockerfile layer.
+- **Search relevance engineering** — BM25 scoring (TF · IDF · length-norm) with per-field boosting and custom analyzers; `must` (scored) vs `filter` (cached gate) query composition.
 
 ---
 
@@ -160,13 +178,13 @@ curl http://localhost:8000/api/v1/health
 ├── Dockerfile             # multi-stage build for the FastAPI service
 ├── src/                   # application code
 │   ├── main.py            # FastAPI app + lifespan wiring
-│   ├── routers/           # API routes (health, papers, ask)
-│   ├── services/          # integrations (ollama, opensearch, pdf_parser, ...)
+│   ├── routers/           # API routes (health, papers, search)
+│   ├── services/          # integrations (arxiv, pdf_parser, opensearch, ollama, ...)
 │   ├── repositories/      # data access
 │   ├── models/ schemas/   # SQLAlchemy models + Pydantic schemas
 │   └── config.py          # env-driven settings
-├── airflow/               # DAGs, plugins, Airflow image
-├── notebooks/week1/       # guided setup + verification notebook
+├── airflow/dags/          # arxiv_paper_ingestion DAG (fetch → parse → store → index)
+├── notebooks/week1-3/     # guided, executed notebooks (setup, ingestion, search)
 └── tests/
 ```
 
@@ -177,7 +195,8 @@ curl http://localhost:8000/api/v1/health
 Being explicit so the boundary is clear:
 
 - **The scaffold (credited):** overall architecture and the weekly curriculum come from the [Jam With AI Production Agentic RAG course](https://github.com/jamwithai) (MIT).
-- **What's mine:** running and validating the whole system on my own hardware; the architecture write-ups and this documentation; the diagram above; the Git/branch strategy; and the planned **AV-safety domain adaptation** + an original feature that take this beyond the course. These land as my own commits, phase by phase, on `main`.
+- **What's mine (so far):** running and validating the whole system on my own hardware; this documentation, the architecture diagram, and the design write-ups; the Git/branch strategy; and real code fixes committed on `main` — **NUL-byte sanitization + transaction-rollback hardening** of the ingestion pipeline, a **`libGL` Dockerfile fix** for Docling, and a **fail-loud observability** check on the DAG.
+- **What's coming:** the **AV-safety domain adaptation** (CA DMV disengagements + NHTSA crash data) and an original feature that take this beyond the course. These land as my own commits, phase by phase.
 
 ---
 
