@@ -22,7 +22,7 @@ services:
       # Container-specific overrides
       - OPENSEARCH_HOST=http://opensearch:9200
       - OPENSEARCH__HOST=http://opensearch:9200
-      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_HOST=http://host.docker.internal:11434
       - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
     networks:
       - rag-network
@@ -92,7 +92,7 @@ services:
       - POSTGRES_DATABASE_URL=postgresql+psycopg2://rag_user:rag_password@postgres:5432/rag_db
       - OPENSEARCH_HOST=http://opensearch:9200
       - OPENSEARCH__HOST=http://opensearch:9200
-      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_HOST=http://host.docker.internal:11434
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
@@ -113,6 +113,10 @@ services:
   ollama:
     image: ollama/ollama:0.11.2
     container_name: rag-ollama
+    # Opt-in only: I run Ollama NATIVELY on macOS for Metal GPU acceleration
+    # (~30x faster than CPU-in-Docker). The API points at host.docker.internal:11434.
+    # Start this containerized fallback with: docker compose --profile docker-ollama up -d
+    profiles: ["docker-ollama"]
     ports:
       - "11434:11434"
     volumes:
